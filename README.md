@@ -3,6 +3,10 @@ A simple Rust crate for building and managing a vector database for semantic sea
 
 **Currently a work in progress**
 
+If you attempt to install this, please add your own *tokenizer.json* file for whatever model you intend to use.
+
+
+
 ## Overview
 This project provides tools to create and manage embeddings-based vector stores for documents. It supports:
 
