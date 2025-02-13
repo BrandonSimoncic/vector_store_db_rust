@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-fastembed = "4.4.0"
 ollama-rs = "0.2.3"
 pdf-extract = "0.8.0"
 text-splitter = { version = "0.20.1", features = ["tokenizers"] }

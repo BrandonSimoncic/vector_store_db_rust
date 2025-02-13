@@ -1,25 +1,35 @@
-use std::fs::Metadata;
 use std::io::Error;
-
+use ollama_rs::generation::embeddings::request::GenerateEmbeddingsRequest;
+use ollama_rs::Ollama;
 use text_splitter::{ChunkConfig, TextSplitter};
-use tokenizers::Tokenizer;
+use tokenizers::{Result, Tokenizer};
+use tokenizers::models::bpe::BPE;
+use pdf_extract::extract_text_from_mem;
 
-struct Filter {
+#[derive(Debug)]
+pub struct Filter {
     key: String,
     value: String,
 }
-struct Node {
+
+impl Filter {
+    pub fn new(key: String, value: String) -> Self {
+        Filter { key, value }
+    }
+}
+#[derive(Debug)]
+pub struct Node<'a> {
     embedding: Vec<Vec<f32>>,
-    sentence: &str,
+    sentence: &'a str,
     text_id: usize,
     metadata: Filter,
 }
-impl Node {
-    async fn new (words: &str, id: usize, metadat: Filter)-> Node{
-        let embeddings = embed_ollama_data("llama3.2:latest", &words).await.unwrap();
+impl<'a> Node<'a>{
+    async fn new (words: &'a str, id: usize, metadat: Filter, model: &String)-> Node<'a>{
+        let embeddings = embed_ollama_data(model, &words).await.unwrap();
         Node {
             embedding: embeddings,
-            sentence:words,
+            sentence: &words,
             text_id: id,
             metadata: metadat,
         }
@@ -28,13 +38,15 @@ impl Node {
 }
 
 pub struct VectorStore {
-    nodes: Vec<Node>
+    nodes: Vec<Node<'static>>,
+    model: String,
 }
 
 impl VectorStore {
-    pub fn new() -> Self {
+    pub fn new(m: &str) -> Self {
         VectorStore {
             nodes: Vec::new(),
+            model: m.to_string(),
         }
     }
     //Get Embedding
@@ -42,9 +54,9 @@ impl VectorStore {
         self.nodes.get(text_id).map(|node| &node.embedding)
     }
     //Add nodes to index
-    pub async fn add(&mut self, words: &str, metadata: Filter){
+    pub async fn add(&mut self, words: &'static str, metadata: Filter){
         let id = self.nodes.len() + 1;
-        let node = Node::new(words, id, metadata).await;
+        let node = Node::new(words, id, metadata, &self.model).await;
         self.nodes.push(node);
     }
     //Delete nodes using ref_doc_id
@@ -53,7 +65,7 @@ impl VectorStore {
         self.nodes.remove(item);
     }
     //Get nodes for response
-    pub fn query(&self, query: &Node, filters: Vec<Filter>) -> Vec<Node>{
+    pub fn query(&self, query: &Node, filters: Vec<Filter>) -> Vec<&Node>{
 
 
         if self.nodes.len() == 0 {
@@ -70,11 +82,14 @@ impl VectorStore {
                 .iter()
                 .map(|node| (node.embedding.clone(), node.text_id))
                 .unzip();
+            //this is probs not right
             let similarities_and_node_ids = get_top_k_embeddings(
-                &query.embedding, 
-                doc_embeddings, 
+                &query.embedding[0], 
+                doc_embeddings[0].clone(), 
                 doc_ids,
             5);
+
+
             result_nodes = similarities_and_node_ids
             .iter()
             .filter_map(|(id, _)| self.nodes.iter().find(|node| node.text_id == *id))
@@ -85,14 +100,30 @@ impl VectorStore {
 
     result_nodes
     }
+    pub async fn search(&self, text: &str) -> Vec<&Node>{
+        let chunks = parse_into_chunks(&text).unwrap();
+        let mut result_nodes = Vec::new();
+        for chunk in chunks{
+            let embeddings = embed_ollama_data(&self.model, &chunk).await.unwrap();
+            let query = Node {
+                embedding: embeddings,
+                sentence: &chunk,
+                text_id: 0,
+                metadata: Filter::new("".to_string(), "".to_string()),
+            };
+            let nodes = self.query(&query, Vec::new());
+            result_nodes.extend(nodes);
+        }
+        result_nodes
 
+    }
     //Persistent SimpleFectorStore to a dir
     fn persist(){}
 
 
 }
 
-fn filter_nodes(nodes: &VectorStore, filters: Vec<Filter>) -> Vec<Node> {
+fn filter_nodes(nodes: &VectorStore, filters: Vec<Filter>) -> Vec<&Node> {
     let mut filtered_nodes = Vec::new();
 
     for node in &nodes.nodes {
@@ -107,7 +138,7 @@ fn filter_nodes(nodes: &VectorStore, filters: Vec<Filter>) -> Vec<Node> {
                 continue;
             }    
             if matches == true{ 
-                filtered_nodes.push(*node.clone());
+                filtered_nodes.push(node);
             }
         }
     }
@@ -151,12 +182,9 @@ fn read_pdf(path: String) -> String{
 }
 
 
-use ollama_rs::generation::embeddings::request::GenerateEmbeddingsRequest;
-use ollama_rs::Ollama;
 
-async fn embed_ollama_data(model: &str, query: &str) -> Result<Vec<Vec<f32>>, Error> {
+async fn embed_ollama_data(model: &String, query: &str) -> Result<Vec<Vec<f32>>> {
     let ollama = Ollama::default();
-
     let request = GenerateEmbeddingsRequest::new(model.to_string(), query.into());
     let res = ollama.generate_embeddings(request).await.unwrap();
     Ok(res.embeddings)
@@ -164,10 +192,22 @@ async fn embed_ollama_data(model: &str, query: &str) -> Result<Vec<Vec<f32>>, Er
 
 
 
-fn parse_into_chunks(text: &str) -> &(impl Iterator<Item = &str>){
-    let max_characters =Some(256);
-    let tokenizer = Tokenizer::from_pretrained("PreTrainedTokenizerFast", None).unwrap();
-    let splitter = TextSplitter::new(ChunkConfig::new(max_characters).with_sizer(tokenizer));
-    let chunks = &splitter.chunks(text);
-    chunks
+fn parse_into_chunks(text: &str) -> Result<impl Iterator<Item = &str>>{
+    let max_characters =Some(256).unwrap();
+    let tokenizer = Tokenizer::from_file("tokenizer.json").unwrap();
+    let splitter  = TextSplitter::new(ChunkConfig::new(max_characters).with_sizer(tokenizer));
+    let chunks = splitter.chunks(text);
+    Ok(chunks.collect::<Vec<_>>().into_iter())
+
 }
+
+// fn get_tokenizer() -> Result<Tokenizer>{
+//     let bpe_builder = BPE::from_file("./path/to/vocab.json", "./path/to/merges.txt");
+//     let bpe = bpe_builder
+//         .dropout(0.1)
+//         .unk_token("[UNK]".into())
+//         .build()?;
+//     let tokeni = Tokenizer::from_file(file_path).unwrap();
+//     let mut tokenizer = Tokenizer::new(bpe);
+//     Ok(tokenizer)
+// }
