@@ -3,8 +3,7 @@ use ollama_rs::generation::embeddings::request::GenerateEmbeddingsRequest;
 use ollama_rs::Ollama;
 use text_splitter::{ChunkConfig, TextSplitter};
 use tokenizers::{Result, Tokenizer};
-use tokenizers::models::bpe::BPE;
-use pdf_extract::extract_text_from_mem;
+use serde_json;
 
 #[derive(Debug)]
 pub struct Filter {
@@ -18,27 +17,27 @@ impl Filter {
     }
 }
 #[derive(Debug)]
-pub struct Node<'a> {
+pub struct Node {
     embedding: Vec<Vec<f32>>,
-    sentence: &'a str,
+    sentence: String,
     text_id: usize,
     metadata: Filter,
 }
-impl<'a> Node<'a>{
-    async fn new (words: &'a str, id: usize, metadat: Filter, model: &String)-> Node<'a>{
+impl Node{
+    async fn new (words: String, id: usize, metadat: Filter, model: &String)-> Node{
         let embeddings = embed_ollama_data(model, &words).await.unwrap();
         Node {
             embedding: embeddings,
-            sentence: &words,
+            sentence: words,
             text_id: id,
             metadata: metadat,
         }
     }
     
 }
-
+#[warn(dead_code)]
 pub struct VectorStore {
-    nodes: Vec<Node<'static>>,
+    nodes: Vec<Node>,
     model: String,
 }
 
@@ -54,7 +53,7 @@ impl VectorStore {
         self.nodes.get(text_id).map(|node| &node.embedding)
     }
     //Add nodes to index
-    pub async fn add(&mut self, words: &'static str, metadata: Filter){
+    pub async fn add(&mut self, words: String, metadata: Filter){
         let id = self.nodes.len() + 1;
         let node = Node::new(words, id, metadata, &self.model).await;
         self.nodes.push(node);
@@ -107,7 +106,7 @@ impl VectorStore {
             let embeddings = embed_ollama_data(&self.model, &chunk).await.unwrap();
             let query = Node {
                 embedding: embeddings,
-                sentence: &chunk,
+                sentence: chunk.to_string(),
                 text_id: 0,
                 metadata: Filter::new("".to_string(), "".to_string()),
             };
@@ -117,8 +116,35 @@ impl VectorStore {
         result_nodes
 
     }
+    pub async fn add_pdf(&mut self, path: String, metadata: Filter){
+        let text = read_pdf(path);
+        self.add(text, metadata).await;
+        self.persist("data").unwrap();
+    }
     //Persistent SimpleFectorStore to a dir
-    fn persist(){}
+    fn persist(&self, dir: &str) -> std::result::Result<(), Error> {
+        std::fs::create_dir_all(dir)?;
+
+        let nodes_path = format!("{}/nodes.json", dir);
+        let nodes_file = std::fs::File::create(nodes_path)?;
+        let nodes_data: Vec<_> = self.nodes.iter().map(|node| {
+            serde_json::json!({
+                "embedding": node.embedding,
+                "sentence": node.sentence,
+                "text_id": node.text_id,
+                "metadata": {
+                    "key": node.metadata.key,
+                    "value": node.metadata.value,
+                }
+            })
+        }).collect();
+        serde_json::to_writer(nodes_file, &nodes_data)?;
+
+        let model_path = format!("{}/model.txt", dir);
+        std::fs::write(model_path, &self.model)?;
+
+        Ok(())
+    }
 
 
 }
