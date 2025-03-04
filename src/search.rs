@@ -15,6 +15,12 @@ impl Filter {
     pub fn new(key: String, value: String) -> Self {
         Filter { key, value }
     }
+    pub fn clone(&self) -> Self {
+        Filter {
+            key: self.key.clone(),
+            value: self.value.clone(),
+        }
+    }
 }
 #[derive(Debug)]
 pub struct Node {
@@ -37,7 +43,7 @@ impl Node{
 }
 #[warn(dead_code)]
 pub struct VectorStore {
-    nodes: Vec<Node>,
+    pub nodes: Vec<Node>,
     model: String,
 }
 
@@ -83,8 +89,8 @@ impl VectorStore {
                 .unzip();
             //this is probs not right
             let similarities_and_node_ids = get_top_k_embeddings(
-                &query.embedding[0], 
-                doc_embeddings[0].clone(), 
+                &query.embedding, 
+                doc_embeddings.clone(), 
                 doc_ids,
             5);
 
@@ -118,8 +124,12 @@ impl VectorStore {
     }
     pub async fn add_pdf(&mut self, path: String, metadata: Filter){
         let text = read_pdf(path);
+        let chunks = parse_into_chunks(&text).unwrap();
+        for chunk in chunks {
+            self.add(chunk.to_string(), metadata.clone()).await;
+        }
         self.add(text, metadata).await;
-        self.persist("data").unwrap();
+        // self.persist("data").unwrap();
     }
     //Persistent SimpleFectorStore to a dir
     fn persist(&self, dir: &str) -> std::result::Result<(), Error> {
@@ -170,13 +180,13 @@ fn filter_nodes(nodes: &VectorStore, filters: Vec<Filter>) -> Vec<&Node> {
     }
     filtered_nodes
 }
-fn normalize(vector: &Vec<f32>) -> Vec<f32> {
-    let norm = (vector.iter().map(|x| x * x).sum::<f32>()).sqrt();
-    vector.iter().map(|x| x / norm).collect()
+fn normalize(vector: &Vec<Vec<f32>>) -> Vec<Vec<f32>> {
+    let norm = (vector.iter().map(|x| dot_product(x, x)).sum::<f32>()).sqrt();
+    vector.iter().map(|x| x.iter().map(|y| y / norm).collect()).collect()
 }
 fn get_top_k_embeddings(
-    query_embedding: &Vec<f32>,
-    doc_embeddings: Vec<Vec<f32>>,
+    query_embedding: &Vec<Vec<f32>>,
+    doc_embeddings: Vec<Vec<Vec<f32>>>,
     doc_ids: Vec<usize>,
     similarity_top_k: usize,
 ) -> Vec<(usize, f32)> {
@@ -190,7 +200,7 @@ fn get_top_k_embeddings(
             let dot_product: f32 = normalized_query
                 .iter()
                 .zip(normalized_doc.iter())
-                .map(|(q, d)| q * d)
+                .map(|(q, d)| dot_product(q, d))
                 .sum();
             (doc_id, dot_product)
         })
@@ -200,7 +210,9 @@ fn get_top_k_embeddings(
     similarities.truncate(similarity_top_k);
     similarities
 }
-
+fn dot_product(a: &Vec<f32>, b: &Vec<f32>) -> f32 {
+    a.iter().zip(b.iter()).map(|(a, b)| a * b).sum()
+}
 fn read_pdf(path: String) -> String{
     let bytes = std::fs::read(path).unwrap();
     let out = pdf_extract::extract_text_from_mem(&bytes).unwrap();
