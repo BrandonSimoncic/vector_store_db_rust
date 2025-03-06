@@ -25,7 +25,7 @@ impl Filter {
 #[derive(Debug)]
 pub struct Node {
     embedding: Vec<Vec<f32>>,
-    sentence: String,
+    pub sentence: String,
     text_id: usize,
     metadata: Filter,
 }
@@ -238,14 +238,3 @@ fn parse_into_chunks(text: &str) -> Result<impl Iterator<Item = &str>>{
     Ok(chunks.collect::<Vec<_>>().into_iter())
 
 }
-
-// fn get_tokenizer() -> Result<Tokenizer>{
-//     let bpe_builder = BPE::from_file("./path/to/vocab.json", "./path/to/merges.txt");
-//     let bpe = bpe_builder
-//         .dropout(0.1)
-//         .unk_token("[UNK]".into())
-//         .build()?;
-//     let tokeni = Tokenizer::from_file(file_path).unwrap();
-//     let mut tokenizer = Tokenizer::new(bpe);
-//     Ok(tokenizer)
-// }
